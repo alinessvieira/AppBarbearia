@@ -41,6 +41,11 @@
         <li class="nav-item">
           <a class="nav-link" href="{{ url_for('main.gerenciar_servicos') }}">Gerenciar Serviços</a>
         </li>
+        <li class="nav-item">
+          <a class="nav-link text-warning" href="{{ url_for('main.analise_demanda') }}">
+            <i class="fa-solid fa-chart-line"></i> Demanda & Cupons
+          </a>
+        </li>
         {% endif %}
         {% endif %}
       </ul>

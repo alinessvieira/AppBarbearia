@@ -1,11 +1,31 @@
 {% extends 'base.html' %}
-{% block body %}
 
+<!-- Desativa os alertas padrão no topo da página para evitar mensagens repetidas -->
+{% block alertas_globais %}{% endblock %}
+
+{% block body %}
 <div class="container mt-5 mb-5">
-  <div class="card-agendar">
+  <div class="card-agendar p-4 shadow-lg text-white bg-dark">
     <h2 class="text-center mb-4">Agende seu Horário</h2>
 
-    <!-- Exibe a sugestão do modelo de ML se estiver disponível -->
+    <!-- Exibição de alertas compacta e destacada dentro do card -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          {% if 'danger' in category or 'alert-danger' in category %}
+            <div class="alert text-center fw-bold py-2 px-3 mb-3 shadow rounded" role="alert" style="background-color: #dc3545; color: white; border: none;">
+              {{ message }}
+            </div>
+          {% else %}
+            <div class="alert {{ category }} text-center fw-bold py-2 px-3 mb-3" role="alert">
+              {{ message }}
+            </div>
+          {% endif %}
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <!-- Sugestão do modelo de Machine Learning -->
     {% if data_sugerida %}
     <div class="alert alert-info" role="alert">
       <p><strong>Sugestão para você!</strong></p>
@@ -14,20 +34,19 @@
       <p>O que você acha? Podemos agendar para você!</p>
     </div>
     {% endif %}
-    <!-- Fim do bloco de sugestão -->
 
-    <!-- Botão para alternar a visibilidade da tabela de serviços -->
+    <!-- Botão para alternar a exibição da tabela de serviços -->
     <div class="text-center mb-3">
         <button class="btn btn-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#tabelaServicosCollapse" aria-expanded="false" aria-controls="tabelaServicosCollapse">
           Ver Serviços e Valores
         </button>
     </div>
 
-    <!-- Tabela de serviços e valores oculta por padrão -->
-    <div class="collapse" id="tabelaServicosCollapse">
+    <!-- Tabela de serviços e valores (oculta por padrão) -->
+    <div class="collapse mb-4" id="tabelaServicosCollapse">
       <h3 class="text-center mt-4 mb-3">Nossos Serviços e Valores</h3>
-      <table class="table table-striped table-bordered">
-        <thead class="table-dark">
+      <table class="table table-striped table-bordered table-dark">
+        <thead>
           <tr>
             <th scope="col">Serviço</th>
             <th scope="col">Valor</th>
@@ -43,64 +62,97 @@
         </tbody>
       </table>
     </div>
-    <!-- Fim da tabela de serviços -->
 
     <!-- Formulário de agendamento -->
-    <form method="POST">
+    <form id="formAgendamento" method="POST">
       {{ form_agendar.csrf_token }}
       <div class="row">
         <!-- Nome de usuário -->
         <div class="col-md-6 mb-3">
           {{ form_agendar.username.label(class="form-label") }}
-          {{ form_agendar.username(class="form-control", placeholder="Seu nome") }}
+          {{ form_agendar.username(class="form-control bg-secondary text-white border-0", placeholder="Seu nome") }}
         </div>
         <!-- Celular -->
         <div class="col-md-6 mb-3">
           {{ form_agendar.cell.label(class="form-label") }}
-          {{ form_agendar.cell(class="form-control", placeholder="DDD + Celular") }}
+          {{ form_agendar.cell(class="form-control bg-secondary text-white border-0", placeholder="DDD + Celular") }}
         </div>
-        <!-- Serviço (agora populado dinamicamente) -->
+        <!-- Serviço -->
         <div class="col-md-6 mb-3">
           {{ form_agendar.servico.label(class="form-label") }}
-          {{ form_agendar.servico(class="form-control") }}
+          {{ form_agendar.servico(class="form-control bg-secondary text-white border-0") }}
+        </div>
+        <!-- Cupom -->
+        <div class="col-md-6 mb-3">
+          {{ form_agendar.cupom.label(class="form-label") }}
+          {{ form_agendar.cupom(class="form-control bg-secondary text-white border-0", placeholder="Ex: CORTE-1234 (opcional)") }}
         </div>
         <!-- Data -->
         <div class="col-md-3 mb-3">
           {{ form_agendar.datar.label(class="form-label") }}
-          {{ form_agendar.datar(class="form-control") }}
+          {{ form_agendar.datar(class="form-control bg-secondary text-white border-0") }}
         </div>
         <!-- Hora -->
         <div class="col-md-3 mb-3">
           {{ form_agendar.hora.label(class="form-label") }}
-          {{ form_agendar.hora(class="form-control") }}
+          {{ form_agendar.hora(class="form-control bg-secondary text-white border-0") }}
         </div>
       </div>
-      <div class="row">
-        <div class="col-md-6">
-          {{ form_agendar.botao_submit_agendar(class="btn btn-agendar mt-3") }}
+      
+      <!-- Botão para acionar a confirmação modal -->
+      <div class="row mt-3">
+        <div class="col-md-12">
+          <button type="button" class="btn btn-warning fw-bold px-4" data-bs-toggle="modal" data-bs-target="#modalConfirmacao">
+            Agendar
+          </button>
         </div>
-        <div class="col-md-6">
-          {% if current_user.is_authenticated and current_user.role == 'admin' %}
-          <a href="{{ url_for('main.agenda_data') }}" class="btn btn-ver-agenda mt-3">Verificar Agenda</a>
-          {% endif %}
+      </div>
+
+      <!-- Modal de Confirmação -->
+      <div class="modal fade" id="modalConfirmacao" tabindex="-1" aria-labelledby="modalConfirmacaoLabel" aria-hidden="true">
+        <div class="modal-dialog">
+          <div class="modal-content bg-dark text-white border-secondary">
+            <div class="modal-header border-secondary">
+              <h5 class="modal-title" id="modalConfirmacaoLabel">Confirmar Agendamento</h5>
+              <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+              Deseja confirmar o agendamento para o dia <span id="spanData" class="text-warning fw-bold"></span> às <span id="spanHora" class="text-warning fw-bold"></span>?
+            </div>
+            <div class="modal-footer border-secondary">
+              <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+              <button type="submit" class="btn btn-warning fw-bold">Confirmar e Agendar</button>
+            </div>
+          </div>
         </div>
       </div>
     </form>
   </div>
 </div>
 
-<!-- Overlay de carregamento -->
-<div id="loadingOverlay">
+<!-- Animação de carregamento -->
+<div id="loadingOverlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 9999; justify-content: center; align-items: center;">
   <div class="loading-spinner d-flex flex-column align-items-center">
-    <img src="{{ url_for('static', filename='img/tesoura_loader.gif') }}" alt="Carregando...">
+    <img src="{{ url_for('static', filename='img/tesoura_loader.gif') }}" alt="Carregando..." style="width: 60px;">
     <p style="margin-top: 20px; color: white; font-weight: bold;">Aguarde, processando agendamento...</p>
   </div>
 </div>
 
 <script>
   document.addEventListener('DOMContentLoaded', function () {
-    const form = document.querySelector('form');
+    const btnAbrirModal = document.querySelector('[data-bs-target="#modalConfirmacao"]');
+    const form = document.getElementById('formAgendamento');
     const overlay = document.getElementById('loadingOverlay');
+
+    if (btnAbrirModal) {
+      btnAbrirModal.addEventListener('click', function () {
+        const dataInput = document.getElementById('datar').value;
+        const horaInput = document.getElementById('hora').value;
+        
+        document.getElementById('spanData').textContent = dataInput ? dataInput.split('-').reverse().join('/') : '[Data não informada]';
+        document.getElementById('spanHora').textContent = horaInput || '[Horário não informado]';
+      });
+    }
 
     if (form && overlay) {
       form.addEventListener('submit', function () {

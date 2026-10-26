@@ -97,7 +97,7 @@
   const backgroundColors = servicosLabels.map((_, i) => cores[i % cores.length]);
 
   new Chart(servicosCtx, {
-    type: 'doughnut',
+    type: 'pie',
     data: {
       labels: servicosLabels,
       datasets: [{

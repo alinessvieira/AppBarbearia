@@ -16,6 +16,8 @@
 <body>
     {% include 'navbar.html' %}
 
+    <!-- Bloco customizável para mensagens flash -->
+    {% block alertas_globais %}
     <div class="container mt-4">
         {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
@@ -32,6 +34,8 @@
         {% endif %}
         {% endwith %}
     </div>
+    {% endblock %}
+
     {% block body %}{% endblock %}
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"

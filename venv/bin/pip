@@ -1,4 +1,4 @@
-#!/root/app-baebearia/venv/bin/python3
+#!/home/vilander/Documentos/GitHub/AppBarbearia/venv/bin/python3
 # -*- coding: utf-8 -*-
 import re
 import sys

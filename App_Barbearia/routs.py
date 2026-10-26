@@ -2,26 +2,30 @@
 
 from flask import Blueprint, render_template, redirect, url_for, flash, request, abort
 from App_Barbearia import database, bcrypt, mail, create_app
-from App_Barbearia.forms import FormLogin, FormCriarConta, Form_Agendar, Form_Avaliar, Form_EditarPerfil, Form_Botao, FormRecuperarSenha, FormRedefinirSenha, Form_GerenciarServicos, Form_RelatorioLucro
+from App_Barbearia.forms import (
+    FormLogin, FormCriarConta, Form_Agendar, Form_Avaliar,
+    Form_EditarPerfil, Form_Botao, FormRecuperarSenha,
+    FormRedefinirSenha, Form_GerenciarServicos, Form_RelatorioLucro
+)
 from App_Barbearia.decorators import admin_required
-from App_Barbearia.models import Usuario, Post, Servico
+from App_Barbearia.models import Usuario, Post, Servico, Cupom
 from flask_login import login_user, logout_user, current_user, login_required
 import secrets
 import os
+import string
+import random
+import pandas as pd
 from PIL import Image
 from sqlalchemy import and_, func
 from datetime import date, datetime, timedelta
 from flask_mail import Message
 from itsdangerous import URLSafeTimedSerializer
-import pywhatkit as kit
 from .ml_model import preparar_dados_para_ml, treinar_modelo_ml, prever_proxima_visita, segmentar_clientes_kmeans
-from flask import render_template
-
+from collections import Counter
 
 # Instância global do modelo de ML para ser acessível nas rotas
 modelo_ml_global = None
 
-# 🔹 Agora é um Blueprint (não mais app direto)
 main = Blueprint("main", __name__)
 
 @main.route("/")
@@ -77,6 +81,7 @@ Detalhes do Agendamento:
 Serviço: {agendamento.servico}
 Data: {agendamento.data.strftime('%d/%m/%Y')}
 Hora: {agendamento.hora}
+Valor Final: R$ {agendamento.valor:.2f}
 
 Se precisar reagendar, entre em contato conosco.
 
@@ -90,7 +95,6 @@ Equipe CorteFácil
     except Exception as e:
         print(f"Falha ao enviar e-mail de confirmação: {e}")
 
-# Função para salvar a imagem
 def salvar_img(imagem):
     codigo = secrets.token_hex(8)
     nome, extensao = os.path.splitext(imagem.filename)
@@ -122,24 +126,17 @@ def editar_perfil():
     foto_perfil = url_for("static", filename=f"fotos_perfil/{current_user.foto_perfil}")
     return render_template("editar_perfil.html", foto_perfil=foto_perfil, form_editar=form_editar)
 
-
 @main.route("/agendar", methods=["GET", "POST"])
 @login_required
 def agendar():
     form_agendar = Form_Agendar()
     
-    from App_Barbearia.models import Servico
-    # Popula dinamicamente as opções de serviço do banco de dados
     servicos = Servico.query.all()
-    
-    # 🟢 CORREÇÃO AQUI: O primeiro elemento da tupla deve ser o ID (s.id) e não o nome.
     form_agendar.servico.choices = [(s.id, f"{s.nome} - R$ {s.valor}") for s in servicos]
 
-    # Popula dinamicamente os horários (opcional, mas recomendado)
     lista_horas = [8, 9, 10, 11, 12, 14, 15, 16]
     form_agendar.hora.choices = [(f"{h}:00", f"{h}:00") for h in lista_horas]
 
-    # Adiciona a previsão na página de agendamento se o modelo estiver disponível
     data_sugerida = None
     if modelo_ml_global:
         try:
@@ -152,41 +149,52 @@ def agendar():
         agendamento_existente = Post.query.filter(
             and_(Post.data == form_agendar.datar.data, Post.hora == form_agendar.hora.data)
         ).first()
+        
         if agendamento_existente:
-            flash("Já existe um agendamento para essa data e hora.", "alert-danger")
+            flash("Este horário já está ocupado! Por favor, escolha outra data ou horário.", "alert-danger")
         else:
-            # 🟢 CORREÇÃO AQUI: Use o ID para buscar o serviço
             servico_escolhido = Servico.query.get(form_agendar.servico.data)
-            valor_servico = servico_escolhido.valor if servico_escolhido else 0.0
-
-            # 🟢 CORREÇÃO AQUI: Atribua o nome do serviço para o campo 'servico' do post
+            valor_servico = float(servico_escolhido.valor) if servico_escolhido else 0.0
             nome_servico = servico_escolhido.nome if servico_escolhido else ""
+
+            # Verificação rigorosa do cupom (se foi informado e se está estritamente ativo)
+            codigo_cupom = None
+            if hasattr(form_agendar, 'cupom') and form_agendar.cupom.data:
+                codigo_informado = form_agendar.cupom.data.strip().upper()
+                cupom_encontrado = Cupom.query.filter_by(codigo=codigo_informado, ativo=True).first()
+                if cupom_encontrado:
+                    desconto = valor_servico * (cupom_encontrado.desconto_percentual / 100.0)
+                    valor_servico = round(valor_servico - desconto, 2)
+                    codigo_cupom = cupom_encontrado.codigo
+                else:
+                    flash(f"Cupom '{codigo_informado}' é inválido ou encontra-se inativo/expirado.", "alert-warning")
 
             post = Post(
                 username=form_agendar.username.data,
                 cell=form_agendar.cell.data,
-                servico=nome_servico, # Atribui o nome do serviço ao post
-                valor=valor_servico, # Atribui o valor do serviço ao post
+                servico=nome_servico,
+                valor=valor_servico,
                 data=form_agendar.datar.data,
                 hora=form_agendar.hora.data,
                 id_usuario=current_user.id,
+                cupom_usado=codigo_cupom
             )
             database.session.add(post)
             database.session.commit()
-            flash("Agendado com Sucesso", "alert-success")
             
-            # 🟢 Chamada para a função de envio de e-mail.
+            data_formatada = form_agendar.datar.data.strftime('%d/%m/%Y')
+            flash(f"Serviço agendado para dia {data_formatada} e hora {form_agendar.hora.data}!", "alert-success")
+            
             enviar_email_confirmacao(current_user.email, post)
-            
             return redirect(url_for("main.agendar"))
     else:
-        print(form_agendar.errors)
+        if request.method == 'POST':
+            print(form_agendar.errors)
 
     return render_template("agendar.html", 
                            form_agendar=form_agendar, 
                            data_sugerida=data_sugerida, 
                            servicos=servicos)
-
 
 @main.route("/agenda_data", methods=["GET", "POST"])
 @login_required
@@ -223,7 +231,6 @@ def avaliar_agendamento(id):
 
     return render_template('avaliar.html', form_avaliar=form_avaliar, agendamento=agendamento)
 
-# Rota para gerenciar os serviços (CRUD)
 @main.route("/gerenciar_servicos", methods=["GET", "POST"])
 @login_required
 @admin_required
@@ -237,11 +244,9 @@ def gerenciar_servicos():
         
         servico_existente = Servico.query.filter_by(nome=nome).first()
         if servico_existente:
-            # Atualiza o serviço existente
             servico_existente.valor = valor
             flash(f"Serviço '{nome}' atualizado com sucesso!", "alert-success")
         else:
-            # Adiciona um novo serviço
             novo_servico = Servico(nome=nome, valor=valor)
             database.session.add(novo_servico)
             flash(f"Serviço '{nome}' adicionado com sucesso!", "alert-success")
@@ -251,7 +256,6 @@ def gerenciar_servicos():
         
     return render_template("gerenciar_servicos.html", form_servico=form_servico, servicos=servicos)
 
-# 🟢 Rota para excluir um serviço
 @main.route("/excluir_servico/<int:id>", methods=["POST"])
 @login_required
 @admin_required
@@ -262,57 +266,40 @@ def excluir_servico(id):
     flash("Serviço excluído com sucesso!", "alert-success")
     return redirect(url_for("main.gerenciar_servicos"))
 
-#novo relatório
-
 @main.route("/relatorio", methods=["GET", "POST"])
 @login_required
 @admin_required
 def relatorio():
-    from collections import Counter
-    # 🔹 Obter as datas do filtro
     data_inicio = request.args.get('data_inicio')
     data_fim = request.args.get('data_fim')
 
-    # 🔹 Define um período padrão se as datas não foram fornecidas
     if not data_inicio or not data_fim:
         hoje = date.today()
-        # Define a data de início como 30 dias atrás
         data_inicio = (hoje - timedelta(days=30)).strftime('%Y-%m-%d')
-        # Define a data de fim como hoje
         data_fim = hoje.strftime('%Y-%m-%d')
 
-    # Converte as strings de data para objetos date
     data_inicio_obj = datetime.strptime(data_inicio, '%Y-%m-%d').date()
     data_fim_obj = datetime.strptime(data_fim, '%Y-%m-%d').date()
 
-    # 🔹 Consulta para todos os agendamentos no período
     agendamentos = Post.query.filter(Post.data.between(data_inicio_obj, data_fim_obj)).all()
 
-    # Lógica para o primeiro gráfico (Agendamentos por Dia)
     contagem_por_dia = Counter([ag.data.strftime("%Y-%m-%d") for ag in agendamentos])
-    # Cria uma lista de todas as datas no período para garantir a ordem e preencher dias sem agendamentos
     all_dates = [data_inicio_obj + timedelta(days=x) for x in range((data_fim_obj - data_inicio_obj).days + 1)]
     dados_agendamentos = {d.strftime("%d/%m/%Y"): contagem_por_dia.get(d.strftime("%Y-%m-%d"), 0) for d in all_dates}
 
-
-    # Lógica para o segundo gráfico (Análise por Serviço)
     contagem_servicos = database.session.query(Post.servico, func.count(Post.id)).filter(
         Post.data.between(data_inicio_obj, data_fim_obj)
     ).group_by(Post.servico).all()
     dados_servicos = dict(contagem_servicos)
 
-    # Lógica para o terceiro gráfico (Lucro Diário)
-    # 🆕 Consulta o banco de dados para obter a soma do valor por dia
     lucro_por_dia = database.session.query(Post.data, func.sum(Post.valor)).filter(
         Post.data.between(data_inicio_obj, data_fim_obj)
     ).group_by(Post.data).order_by(Post.data).all()
     
-    # 🆕 Prepara os dados para o gráfico de linha, preenchendo os dias sem lucro com zero
     dados_lucro_diario = {d.strftime("%d/%m/%Y"): 0.0 for d in all_dates}
     for data, valor in lucro_por_dia:
         dados_lucro_diario[data.strftime("%d/%m/%Y")] = float(valor)
 
-    # Calcula o lucro total para o período filtrado
     lucro_total = sum(dados_lucro_diario.values())
     total_valor_formatado = f"{lucro_total:,.2f}".replace('.', ',')
 
@@ -330,12 +317,7 @@ def relatorio():
 @login_required
 @admin_required
 def relatorio_avaliacoes():
-    """Rota para exibir relatório de avaliações dos clientes por serviço."""
-    
-    # Busca todos os agendamentos com avaliações
     agendamentos_com_avaliacao = Post.query.filter(Post.avaliacao.isnot(None)).all()
-    
-    # Calcula a média de avaliações por serviço
     dados_avaliacoes = {}
     contagem_avaliacoes = {}
     
@@ -348,15 +330,11 @@ def relatorio_avaliacoes():
         dados_avaliacoes[servico] += agendamento.avaliacao
         contagem_avaliacoes[servico] += 1
     
-    # Calcula a média
     media_avaliacoes = {}
     for servico in dados_avaliacoes:
         media_avaliacoes[servico] = round(dados_avaliacoes[servico] / contagem_avaliacoes[servico], 2)
     
-    # Dados para o gráfico (ordenado por média)
     media_avaliacoes_ordenado = dict(sorted(media_avaliacoes.items(), key=lambda x: x[1], reverse=True))
-    
-    # Estatísticas gerais
     total_avaliacoes = len(agendamentos_com_avaliacao)
     media_geral = round(sum(ag.avaliacao for ag in agendamentos_com_avaliacao) / total_avaliacoes, 2) if total_avaliacoes > 0 else 0
     
@@ -372,16 +350,177 @@ def relatorio_avaliacoes():
 @login_required
 @admin_required
 def segmentacao():
-    """Rota para exibir a segmentação de clientes."""
-    df_segmentos = segmentar_clientes_kmeans()
+    ordenar_por = request.args.get("ordenar_por", "valor")
     
-    if not df_segmentos.empty:
-        # Converte o DataFrame para um formato de dicionário para o Jinja
-        segmentos = df_segmentos.to_dict('records')
-        return render_template("segmentacao.html", segmentos=segmentos)
-    else:
-        flash("Não há dados suficientes para segmentar os clientes.", "alert-info")
+    clientes = Usuario.query.filter_by(role="cliente").all()
+    if not clientes:
+        flash("Nenhum cliente cadastrado para análise.", "alert-info")
         return redirect(url_for("main.home"))
+
+    hoje = date.today()
+    dados_clientes = []
+
+    for cliente in clientes:
+        agendamentos = Post.query.filter(
+            (Post.id_usuario == cliente.id) | (Post.username == cliente.username)
+        ).all()
+
+        frequencia = len(agendamentos)
+        valor_total = sum(ag.valor for ag in agendamentos if ag.valor is not None)
+
+        if agendamentos:
+            datas = [ag.data for ag in agendamentos if ag.data is not None]
+            ultima_data = max(datas) if datas else None
+            recencia = (hoje - ultima_data).days if ultima_data else None
+            # Formata a data para DD/MM/AAAA se existir
+            ultima_visita_str = ultima_data.strftime("%d/%m/%Y") if ultima_data else None #
+        else:
+            recencia = None
+            ultima_visita_str = None
+
+        dados_clientes.append({
+            "user_id": cliente.id,
+            "username": cliente.username,
+            "email": cliente.email,
+            "frequencia": frequencia,
+            "valor_total": valor_total,
+            "recencia": recencia,
+            "ultima_visita": ultima_visita_str,  # <-- Nova chave com a data exata!
+            "destaque_valor": None,
+            "destaque_freq": None
+        })
+
+    # Top 3 em Valor Financeiro
+    clientes_por_valor = sorted(dados_clientes, key=lambda x: x["valor_total"], reverse=True)
+    medalhas = ["🥇 Ouro", "🥈 Prata", "🥉 Bronze"]
+    for posicao, item in enumerate(clientes_por_valor[:3]):
+        if item["valor_total"] > 0:
+            item["destaque_valor"] = medalhas[posicao]
+
+    # Top 3 em Frequência
+    clientes_por_freq = sorted(dados_clientes, key=lambda x: x["frequencia"], reverse=True)
+    for posicao, item in enumerate(clientes_por_freq[:3]):
+        if item["frequencia"] > 0:
+            item["destaque_freq"] = medalhas[posicao]
+
+    # Ordenação da visualização
+    if ordenar_por == "frequencia":
+        dados_clientes.sort(key=lambda x: x["frequencia"], reverse=True)
+    elif ordenar_por == "recencia":
+        dados_clientes.sort(key=lambda x: (x["recencia"] is None, -(x["recencia"] or 0)))
+    else:
+        dados_clientes.sort(key=lambda x: x["valor_total"], reverse=True)
+
+    return render_template(
+        "segmentacao.html",
+        segmentos=dados_clientes,
+        ordenar_por=ordenar_por
+    )
+
+@main.route("/analise_demanda", methods=["GET"])
+@login_required
+@admin_required
+def analise_demanda():
+    agendamentos = Post.query.all()
+    cupons = Cupom.query.order_by(Cupom.data_criacao.desc()).all()
+
+    dias_semana_pt = {
+        0: 'Segunda-feira',
+        1: 'Terça-feira',
+        2: 'Quarta-feira',
+        3: 'Quinta-feira',
+        4: 'Sexta-feira',
+        5: 'Sábado',
+        6: 'Domingo'
+    }
+    ordem_dias = ['Segunda-feira', 'Terça-feira', 'Quarta-feira', 'Quinta-feira', 'Sexta-feira', 'Sábado']
+    horarios_fixos = ['8:00', '9:00', '10:00', '11:00', '12:00', '14:00', '15:00', '16:00']
+
+    if not agendamentos:
+        matriz_demanda = []
+        impacto_cupons = {"total_agendamentos": 0, "com_cupom": 0, "taxa_conversao": 0}
+    else:
+        dados = [{
+            'data': ag.data,
+            'hora': ag.hora,
+            'cupom_usado': ag.cupom_usado,
+            'dia_semana': dias_semana_pt[ag.data.weekday()]
+        } for ag in agendamentos]
+
+        df = pd.DataFrame(dados)
+
+        pivot = pd.crosstab(
+            df['dia_semana'],
+            df['hora']
+        ).reindex(index=ordem_dias, columns=horarios_fixos, fill_value=0)
+
+        matriz_demanda = []
+        for dia in ordem_dias:
+            linha = {'dia': dia, 'horarios': {h: int(pivot.loc[dia, h]) for h in horarios_fixos}}
+            matriz_demanda.append(linha)
+
+        total_agendamentos = len(df)
+        com_cupom = int(df['cupom_usado'].notnull().sum())
+        taxa = round((com_cupom / total_agendamentos) * 100, 1) if total_agendamentos > 0 else 0
+        impacto_cupons = {
+            "total_agendamentos": total_agendamentos,
+            "com_cupom": com_cupom,
+            "taxa_conversao": taxa
+        }
+
+    return render_template(
+        "analise_demanda.html",
+        matriz_demanda=matriz_demanda,
+        horarios_fixos=horarios_fixos,
+        cupons=cupons,
+        impacto_cupons=impacto_cupons
+    )
+
+@main.route("/gerar_cupom", methods=["POST"])
+@login_required
+@admin_required
+def gerar_cupom():
+    desconto = request.form.get("desconto", type=float)
+    if not desconto or desconto <= 0 or desconto > 100:
+        flash("Informe um percentual de desconto válido entre 1% e 100%.", "alert-danger")
+        return redirect(url_for("main.analise_demanda"))
+
+    sufixo = ''.join(random.choices(string.digits, k=4))
+    codigo_novo = f"CORTE-{sufixo}"
+
+    while Cupom.query.filter_by(codigo=codigo_novo).first():
+        sufixo = ''.join(random.choices(string.digits, k=4))
+        codigo_novo = f"CORTE-{sufixo}"
+
+    novo_cupom = Cupom(codigo=codigo_novo, desconto_percentual=desconto, ativo=True)
+    database.session.add(novo_cupom)
+    database.session.commit()
+
+    flash(f"Cupom '{codigo_novo}' ({desconto}%) gerado com sucesso!", "alert-success")
+    return redirect(url_for("main.analise_demanda"))
+
+@main.route("/inativar_cupom/<int:id>", methods=["POST"])
+@login_required
+@admin_required
+def inativar_cupom(id):
+    cupom = Cupom.query.get_or_404(id)
+    cupom.ativo = not cupom.ativo
+    database.session.commit()
+    
+    status_texto = "ativado" if cupom.ativo else "inativado"
+    flash(f"O cupom '{cupom.codigo}' foi {status_texto} com sucesso!", "alert-success")
+    return redirect(url_for("main.analise_demanda"))
+
+@main.route("/excluir_cupom/<int:id>", methods=["POST"])
+@login_required
+@admin_required
+def excluir_cupom(id):
+    cupom = Cupom.query.get_or_404(id)
+    database.session.delete(cupom)
+    database.session.commit()
+    
+    flash("Cupom excluído com sucesso do sistema!", "alert-success")
+    return redirect(url_for("main.analise_demanda"))
 
 @main.route("/agenda_hoje")
 @login_required
@@ -405,8 +544,6 @@ def excluir_agendamento(id):
     database.session.commit()
     flash("Agendamento excluído com sucesso!", "alert-success")
     return redirect(url_for("main.agenda_hoje"))
-
-#redefinir senha
 
 def enviar_email_recuperacao(usuario):
     token = usuario.get_reset_token()
@@ -432,29 +569,22 @@ def recuperar_senha():
             flash("E-mail não encontrado.", "alert-danger")
     return render_template("recuperar_senha.html", form_recuperar=form_recuperar)
 
-# 🟢 Rota para redefinição de senha
 @main.route("/redefinir_senha/<token>", methods=["GET", "POST"])
 def redefinir_senha(token):
-    # Se o usuário já está logado, ele não precisa redefinir a senha
     if current_user.is_authenticated:
         return redirect(url_for('main.home'))
 
-    # Verifica se o token é válido para um usuário
     user = Usuario.verify_reset_token(token)
     if user is None:
         flash('Token de redefinição de senha inválido ou expirado.', 'danger')
         return redirect(url_for('main.recuperar_senha'))
 
-    # Cria o formulário de redefinição de senha
     form_redefinir = FormRedefinirSenha()
-    
-    # Se o formulário for submetido
     if form_redefinir.validate_on_submit():
         if form_redefinir.senha.data != form_redefinir.confirmacao_senha.data:
             flash('As senhas não coincidem.', 'danger')
             return render_template('redefinir_senha.html', form_redefinir=form_redefinir, token=token)
 
-        # Hash da nova senha e atualização no banco de dados
         senha_crypt = bcrypt.generate_password_hash(form_redefinir.senha.data)
         user.senha = senha_crypt
         database.session.commit()
@@ -462,9 +592,7 @@ def redefinir_senha(token):
         flash('Sua senha foi atualizada com sucesso!', 'success')
         return redirect(url_for('main.login'))
 
-    # Se a requisição for GET, apenas exibe o formulário
     return render_template("redefinir_senha.html", form_redefinir=form_redefinir, token=token)
-
 
 @main.route("/usuarios")
 @login_required
@@ -475,7 +603,6 @@ def usuarios():
 def servicos():
     return render_template("servicos.html")
 
-# E adicione este código ao final do seu arquivo routs.py
 @main.app_errorhandler(404)
 def pagina_nao_encontrada(e):
     return render_template('404.html'), 404

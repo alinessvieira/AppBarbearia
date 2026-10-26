@@ -9,7 +9,7 @@ from flask_login import current_user
 from datetime import date, datetime
 from flask_wtf import FlaskForm
 from wtforms import StringField, FloatField, SubmitField
-from wtforms.validators import DataRequired
+from wtforms.validators import DataRequired, Email, EqualTo, Length, ValidationError, Optional
 
 # 🟢 Novo formulário para gerenciar serviços
 class Form_GerenciarServicos(FlaskForm):
@@ -61,6 +61,8 @@ class Form_Agendar(FlaskForm):
     datar = DateField('Data', validators=[DataRequired(), DataFutura()])
     hora = SelectField('Hora', validators=[DataRequired()])
     botao_submit_agendar = SubmitField('Agendar')
+    # No formulário Form_Agendar em forms.py, adicione:
+    cupom = StringField('Cupom de Desconto (Opcional)', validators=[Optional(), Length(max=15)])
 
     # Você pode manter a lista de horas aqui ou preencher dinamicamente na rota
     # Se quiser manter aqui, adicione a lógica para preencher o campo 'hora'

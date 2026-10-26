@@ -9,8 +9,7 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_bcrypt import Bcrypt
 from flask_login import LoginManager
 from flask_migrate import Migrate
-from flask_mail import Mail # Importar a classe Mail
-import pywhatkit as kit
+from flask_mail import Mail
 
 # Carrega variáveis de ambiente
 load_dotenv()
@@ -22,7 +21,7 @@ login_manager = LoginManager()
 login_manager.login_view = 'main.login'
 login_manager.login_message_category = 'alert-info'
 migrate = Migrate()
-mail = Mail() # Inicializar a instância da extensão
+mail = Mail()
 
 def create_app():
     app = Flask(__name__, instance_relative_config=True)
@@ -52,16 +51,11 @@ def create_app():
     bcrypt.init_app(app)
     login_manager.init_app(app)
     migrate.init_app(app, database)
-    mail.init_app(app) # Inicializar a extensão 'mail'
+    mail.init_app(app)
 
     # Registrar rotas
     from .routs import main as main_blueprint
     app.register_blueprint(main_blueprint)
-
-    # Cria tabelas automaticamente se ainda não existirem (não recomendado com Flask-Migrate,
-    # use `flask db upgrade` para migrações)
-    # with app.app_context():
-    #     database.create_all()
 
     return app
 
@@ -80,9 +74,7 @@ def formatar_numero_whatsapp(cell):
 
 
 def enviar_whatsapp_lembrete(agendamento, tempo_antes):
-    """Envia lembrete de agendamento via WhatsApp com informação do tempo.
-    tempo_antes: string com a quantidade de tempo (ex: '24 horas', '2 horas', '1 hora', '30 minutos')
-    """
+    """Envia lembrete de agendamento via WhatsApp de forma segura."""
     numero = formatar_numero_whatsapp(agendamento.cell)
     if not numero:
         print(f"Número inválido para lembrete de agendamento {agendamento.id}: {agendamento.cell}")
@@ -98,11 +90,12 @@ def enviar_whatsapp_lembrete(agendamento, tempo_antes):
     )
 
     try:
+        import pywhatkit as kit
         kit.sendwhatmsg_instantly(numero, mensagem, wait_time=20, tab_close=True, close_time=5)
         print(f"Lembrete ({tempo_antes}) enviado para {numero} referente ao agendamento {agendamento.id}")
         return True
     except Exception as e:
-        print(f"Falha ao enviar lembrete para {numero}: {e}")
+        print(f"Aviso: Não foi possível enviar o WhatsApp automatizado (possível falta de interface gráfica ou conexão): {e}")
         return False
 
 
@@ -111,7 +104,6 @@ def verificar_lembretes():
 
     agora = datetime.now()
     
-    # Define os 4 horários de lembrete
     lembretes = [
         (timedelta(days=1), 'lembrete_24h_enviado', '24 horas'),
         (timedelta(hours=2), 'lembrete_2h_enviado', '2 horas'),
@@ -119,7 +111,6 @@ def verificar_lembretes():
         (timedelta(minutes=30), 'lembrete_30min_enviado', '30 minutos'),
     ]
     
-    # Busca agendamentos de hoje e amanhã
     agora_data = agora.date()
     amanha_data = agora_data + timedelta(days=1)
     
@@ -136,13 +127,10 @@ def verificar_lembretes():
         data_horario = datetime.combine(agendamento.data, horario_agendamento)
         tempo_falta = data_horario - agora
         
-        # Verifica cada lembrete
         for intervalo, campo_enviado, texto_tempo in lembretes:
-            # Se o campo já foi enviado, pula
-            if getattr(agendamento, campo_enviado):
+            if getattr(agendamento, campo_enviado, False):
                 continue
             
-            # Verifica se está no horário correto (5 minutos de margem)
             margem = timedelta(minutes=5)
             if -margem <= (tempo_falta - intervalo) <= margem:
                 if enviar_whatsapp_lembrete(agendamento, texto_tempo):
